@@ -11,7 +11,7 @@
 
 -define(INTERNAL_MODULE, udon).
 
--record(state, {bucket, key, method, response_data = undefined}).
+-record(state, {available_method_list, response_data = undefined}).
 
 -compile([{parse_transform, lager_transform}]).
 
@@ -22,35 +22,52 @@
 -include_lib("webmachine/include/webmachine.hrl").
 
 init(_Config) ->
-    {ok, #state{}}.
+    AvailableMethod = ?INTERNAL_MODULE:module_info(exports),
+    {ok, #state{available_method_list = AvailableMethod}}.
 
 allowed_methods(ReqData, State) ->
     {['GET', 'POST'], ReqData, State}.
 
-resource_exists(ReqData= #wm_reqdata{method = 'GET'}, State) ->
+resource_exists(ReqData= #wm_reqdata{method = 'GET'}, State = #state{available_method_list = MethodList}) ->
     {ok, Bucket} = get_bucket(ReqData),
     {ok, Key} = get_key(ReqData),
     {ok, Method} = get_method(ReqData),
     lager:debug("GET: method ~p bucket ~p key ~p", [Method, Bucket, Key]),
 
-    case erlang:function_exported(?INTERNAL_MODULE, Method, 2) of
-        true ->
-            Result = ?INTERNAL_MODULE:Method(Bucket, Key),
-            {true, ReqData, State#state{response_data = Result}};
+    case lists:keyfind(Method, 1, MethodList) of
+        {Method, ArgsNum} ->
+            case wrq:req_qs(ReqData) of
+                [] when ArgsNum =:= 2 ->
+                    Result = ?INTERNAL_MODULE:Method(Bucket, Key),
+                    {true, ReqData, State#state{response_data = Result}};
+                ReqQs when ArgsNum =:= 3 ->
+                    Result = ?INTERNAL_MODULE:Method(Bucket, Key, ReqQs),
+                    {true, ReqData, State#state{response_data = Result}};
+                _ ->
+                    {false, ReqData, State}
+            end;
         false ->
             {false, ReqData, State}
     end;
-resource_exists(ReqData= #wm_reqdata{method = 'POST'}, State) ->
+resource_exists(ReqData= #wm_reqdata{method = 'POST'}, State = #state{available_method_list = MethodList}) ->
     {ok, Bucket} = get_bucket(ReqData),
     {ok, Key} = get_key(ReqData),
     {ok, Method} = get_method(ReqData),
     ReqBody = wrq:req_body(ReqData),
     lager:debug("POST: method ~p bucket ~p key ~p value ~p", [Method, Bucket, Key, ReqBody]),
 
-    case erlang:function_exported(?INTERNAL_MODULE, Method, 2) of
-        true ->
-            Result = ?INTERNAL_MODULE:Method({Bucket, Key}, ReqBody),
-            {true, ReqData, State#state{response_data = Result}};
+    case lists:keyfind(Method, 1, MethodList) of
+        {Method, ArgsNum} ->
+            case wrq:req_qs(ReqData) of
+                [] when ArgsNum =:= 2 ->
+                    Result = ?INTERNAL_MODULE:Method({Bucket, Key}, ReqBody),
+                    {true, ReqData, State#state{response_data = Result}};
+                ReqQs when ArgsNum =:= 3 ->
+                    Result = ?INTERNAL_MODULE:Method({Bucket, Key}, ReqBody, ReqQs),
+                    {true, ReqData, State#state{response_data = Result}};
+                _ ->
+                    {false, ReqData, State}
+            end;
         false ->
             {false, ReqData, State}
     end.
