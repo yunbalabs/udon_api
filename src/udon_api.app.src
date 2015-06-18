@@ -1,0 +1,14 @@
+{application, udon_api,
+ [
+  {description, ""},
+  {vsn, "1"},
+  {registered, []},
+  {applications, [
+                  kernel,
+                  stdlib,
+                  webmachine,
+                  lager
+                 ]},
+  {mod, { udon_api_app, []}},
+  {env, []}
+ ]}.

@@ -1,0 +1,10 @@
+udon_api.iml
+.rebar
+ebin
+.idea
+rel/udon_api
+rel/files/sys.config
+deps
+log
+erl_crash.dump
+*.beam
