@@ -10,7 +10,12 @@
 %% ===================================================================
 
 start(_StartType, _StartArgs) ->
-    udon_api_sup:start_link().
+    Result = udon_api_sup:start_link(),
+
+    [{port, Port}] = udon_api_config:redis_config(),
+    redis_protocol:start(Port, redis_udon),
+
+    Result.
 
 stop(_State) ->
     ok.

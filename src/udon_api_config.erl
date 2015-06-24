@@ -10,7 +10,7 @@
 -author("zy").
 
 %% API
--export([web_config/0]).
+-export([web_config/0, redis_config/0]).
 
 web_config() ->
     {ok, App}  = application:get_application(?MODULE),
@@ -26,3 +26,9 @@ web_config() ->
         {port, Port},
         {dispatch, Dispatch}
     ].
+
+redis_config() ->
+    {ok, App}  = application:get_application(?MODULE),
+    Port = application:get_env(App, redis_port, 6379),
+
+    [{port, Port}].
