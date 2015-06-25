@@ -35,9 +35,7 @@ exchange(Client, Args, undefined) ->
         {redis_request, Command} ->
             case udon_request(Command) of
                 {ok, Bucket, Key, Operate} ->
-                    %%{ok, ReqId} = udon_op_fsm:op(3, 3, Operate, {Bucket, Key}),
-                    ReqId = "testid",
-                    self() ! {ReqId, ok},
+                    {ok, ReqId} = udon_op_fsm:op(3, 3, Operate, {Bucket, Key}),
                     TimerRef = erlang:start_timer(5000, self(), timeout),
                     exchange(Client, Args, #exchange_state{operate = Operate, timer = TimerRef, request_id = ReqId});
                 {error, Error} ->
@@ -85,24 +83,62 @@ exchange(Client, Args, State = #exchange_state{operate = Operate, timer = TimerR
 udon_request(Command) when length(Command) > 1 ->
     lager:debug("Redis request ~p", [Command]),
     [MethodBin, BucketKeyBin | Rest] = Command,
-    {ok, Method} = get_method(MethodBin),
     case get_bucket_key(BucketKeyBin) of
         {ok, Bucket, Key} ->
-            {ok, Bucket, Key, {Method}};
+            {ok, Method} = get_method(MethodBin),
+            case Method of
+                "sadd" when length(Rest) =:= 1 ->
+                    [Item] = Rest,
+                    {ok, Bucket, Key, {sadd, {Bucket, Key}, Item}};
+                "srem" when length(Rest) =:= 1 ->
+                    [Item] = Rest,
+                    {ok, Bucket, Key, {srem, {Bucket, Key}, Item}};
+                "del" when length(Rest) =:= 0 ->
+                    {ok, Bucket, Key, {del, Bucket, Key}};
+                "smembers" when length(Rest) =:= 0 ->
+                    {ok, Bucket, Key, {smembers, Bucket, Key}};
+                "expire" when length(Rest) =:= 1 ->
+                    [TTL] = Rest,
+                    {ok, Bucket, Key, {transaction, {Bucket, Key}, [[<<"EXPIRE">>, BucketKeyBin, TTL]]}};
+                "sadd_with_ttl" when length(Rest) =:= 2 ->
+                    [Item, TTL] = Rest,
+                    {ok, Bucket, Key, {transaction, {Bucket, Key}, [
+                        [<<"SADD">>, BucketKeyBin, Item],
+                        [<<"EXPIRE">>, BucketKeyBin, TTL]
+                    ]}};
+                "srem_with_ttl" when length(Rest) =:= 2 ->
+                    [Item, TTL] = Rest,
+                    {ok, Bucket, Key, {transaction, {Bucket, Key}, [
+                        [<<"SREM">>, BucketKeyBin, Item],
+                        [<<"EXPIRE">>, BucketKeyBin, TTL]
+                    ]}};
+                _ ->
+                    {error, unsupported_command}
+            end;
         not_found ->
             {error, invalid_command}
     end;
 udon_request(_Command) ->
     {error, invalid_command}.
 
-udon_response(Operate, Value) ->
-    lager:debug("Redis request ~p udon response ~p", [Operate, Value]),
-    Resp = Value,
-    {ok, Resp}.
+udon_response({sadd, {_Bucket, _Key}, _Item}, [ok, ok, ok]) ->
+    {ok, 1};
+udon_response({srem, {_Bucket, _Key}, _Item}, [ok, ok, ok]) ->
+    {ok, 1};
+udon_response({del, _Bucket, _Key}, [ok, ok, ok]) ->
+    {ok, 1};
+udon_response({smembers, _Bucket, _Key}, [{ok, Data1}, {ok, Data2}, {ok, Data3}]) ->
+    Data = lists_union([Data1, Data2, Data3]),
+    {ok, Data};
+udon_response({transaction, {_Bucket, _Key}, _CommandList}, [ok, ok, ok]) ->
+    {ok, 1};
+udon_response(Operate, Error) ->
+    lager:error("~p failed: ~p", [Operate, Error]),
+    {error, failed}.
 
 get_method(MethodBin) ->
     MethodStr = binary_to_list(MethodBin),
-    {ok, list_to_atom(string:to_lower(MethodStr))}.
+    {ok, string:to_lower(MethodStr)}.
 
 get_bucket_key(BucketKeyBin) ->
     case string:tokens(binary_to_list(BucketKeyBin), ",") of
@@ -112,3 +148,13 @@ get_bucket_key(BucketKeyBin) ->
         _ ->
             not_found
     end.
+
+lists_union(Lists) ->
+    lists_union(Lists, gb_sets:new()).
+
+lists_union([], Set) ->
+    gb_sets:to_list(Set);
+lists_union([List | Rest], Set) ->
+    S = gb_sets:from_list(List),
+    Set2 = gb_sets:union([S, Set]),
+    lists_union(Rest, Set2).
