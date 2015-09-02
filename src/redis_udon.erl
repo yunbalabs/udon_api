@@ -147,6 +147,9 @@ udon_request(Command) when length(Command) > 1 ->
                             [["SREM", OnlineKey, Uid] | [["EXPIRE", OnlineKey, TTL] | Cmd]]]]
                     end, [], [DayKey, HourKey, MinKey]),
                     {ok, Bucket, Key, {transaction, {Bucket, Key}, Commands}};
+                "stat_appkey" when length(Rest) =:= 1 ->
+                    [StatKey] = Rest,
+                    {ok, Bucket, Key, {command, {Bucket, Key}, [<<"SMEMBERS">>, StatKey]}};
                 _ ->
                     {error, unsupported_command}
             end;
@@ -182,6 +185,13 @@ udon_response(Op = {smembers, _Bucket, _Key}, Value) ->
 udon_response(Op = {transaction, {_Bucket, _Key}, _CommandList}, Value) ->
     case lists:all(fun(Ret) -> Ret == ok end, Value) of
         true -> {ok, 1};
+        _ -> operate_error(Op, Value)
+    end;
+udon_response(Op = {command, {_Bucket, _Key}, _Command}, Value) ->
+    case lists:all(fun({Ret, _}) -> Ret == ok end, Value) of
+        true ->
+            [{ok, Data} | _ ] = Value,
+            {ok, Data};
         _ -> operate_error(Op, Value)
     end;
 udon_response(Operate, Error) ->
