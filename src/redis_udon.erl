@@ -147,9 +147,13 @@ udon_request(Command) when length(Command) > 1 ->
                             [["SREM", OnlineKey, Uid] | [["EXPIRE", OnlineKey, TTL] | Cmd]]]]
                     end, [], [DayKey, HourKey, MinKey]),
                     {ok, Bucket, Key, {transaction, {Bucket, Key}, Commands}};
-                "stat_appkey" when length(Rest) =:= 1 ->
-                    [StatKey] = Rest,
-                    {ok, Bucket, Key, {command, {Bucket, Key}, [<<"SMEMBERS">>, StatKey]}};
+                "stat_appkey" when length(Rest) =:= 4 ->
+                    [Type, StatTime, TimeType, Range] = Rest,
+                    {ok, [Year, Month, Day, Hour, Min, Sec], []} = io_lib:fread("~4c-~2c-~2c-~2c-~2c-~2c", binary_to_list(StatTime)),
+                    StatCommands = get_stat_commands(Type, Key,
+                        {{list_to_integer(Year), list_to_integer(Month), list_to_integer(Day)}, {list_to_integer(Hour), list_to_integer(Min), list_to_integer(Sec)}},
+                        binary_to_integer(Range), TimeType),
+                    {ok, Bucket, Key, {transaction_with_value, {Bucket, Key}, StatCommands}};
                 _ ->
                     {error, unsupported_command}
             end;
@@ -188,6 +192,13 @@ udon_response(Op = {transaction, {_Bucket, _Key}, _CommandList}, Value) ->
         _ -> operate_error(Op, Value)
     end;
 udon_response(Op = {command, {_Bucket, _Key}, _Command}, Value) ->
+    case lists:all(fun({Ret, _}) -> Ret == ok end, Value) of
+        true ->
+            [{ok, Data} | _ ] = Value,
+            {ok, Data};
+        _ -> operate_error(Op, Value)
+    end;
+udon_response(Op = {transaction_with_value, {_Bucket, _Key}, _CommandList}, Value) ->
     case lists:all(fun({Ret, _}) -> Ret == ok end, Value) of
         true ->
             [{ok, Data} | _ ] = Value,
@@ -246,3 +257,46 @@ get_time_keys() ->
             [Year, Month, Day, Hour, Min, Sec div 10])),
 
     [DayKey, HourKey, MinKey, SecKey].
+
+get_stat_commands(Type, Key, {{Year, Month, Day}, {Hour, Min, _Sec}}, Range, <<"m">>) ->
+    get_stat_commands(Type, Key, {{Year, Month, Day}, {Hour, Min div 10}}, Range, []);
+get_stat_commands(Type, Key, {{Year, Month, Day}, {Hour, _Min, _Sec}}, Range, <<"h">>) ->
+    get_stat_commands(Type, Key, {{Year, Month, Day}, {Hour}}, Range, []);
+get_stat_commands(Type, Key, {{Year, Month, Day}, {_Hour, _Min, _Sec}}, Range, <<"d">>) ->
+    get_stat_commands(Type, Key, {{Year, Month, Day}}, Range, []);
+
+get_stat_commands(_Type, _Key, _Date, 0, Commands) ->
+    Commands;
+
+get_stat_commands(Type, Key, {{Year, Month, Day}, {Hour, 0}}, Range, Commands) ->
+    DateBin = iolist_to_binary(io_lib:format("~.4.0w-~.2.0w-~.2.0w-~.2.0w-0", [Year, Month, Day, Hour])),
+    Command = ["SCARD", <<Type/binary, "_", Key/binary, "_", DateBin/binary>>],
+    {{NewYear, NewMonth, NewDay}, {NewHour, NewMin, _NewSec}} =
+        calendar:gregorian_seconds_to_datetime(calendar:datetime_to_gregorian_seconds({{Year, Month, Day}, {Hour, 0, 0}}) - 600),
+    get_stat_commands(Type, Key, {{NewYear, NewMonth, NewDay}, {NewHour, NewMin div 10}}, Range - 1, [Command | Commands]);
+get_stat_commands(Type, Key, {{Year, Month, Day}, {Hour, Min}}, Range, Commands) ->
+    DateBin = iolist_to_binary(io_lib:format("~.4.0w-~.2.0w-~.2.0w-~.2.0w-~.1.0w", [Year, Month, Day, Hour, Min])),
+    Command = ["SCARD", <<Type/binary, "_", Key/binary, "_", DateBin/binary>>],
+    get_stat_commands(Type, Key, {{Year, Month, Day}, {Hour, Min - 1}}, Range - 1, [Command | Commands]);
+
+get_stat_commands(Type, Key, {{Year, Month, Day}, {0}}, Range, Commands) ->
+    DateBin = iolist_to_binary(io_lib:format("~.4.0w-~.2.0w-~.2.0w-00", [Year, Month, Day])),
+    Command = ["SCARD", <<Type/binary, "_", Key/binary, "_", DateBin/binary>>],
+    {{NewYear, NewMonth, NewDay}, {NewHour, _NewMin, _NewSec}} =
+        calendar:gregorian_seconds_to_datetime(calendar:datetime_to_gregorian_seconds({{Year, Month, Day}, {0, 0, 0}}) - 3600),
+    get_stat_commands(Type, Key, {{NewYear, NewMonth, NewDay}, {NewHour}}, Range - 1, [Command | Commands]);
+get_stat_commands(Type, Key, {{Year, Month, Day}, {Hour}}, Range, Commands) ->
+    DateBin = iolist_to_binary(io_lib:format("~.4.0w-~.2.0w-~.2.0w-~.2.0w", [Year, Month, Day, Hour])),
+    Command = ["SCARD", <<Type/binary, "_", Key/binary, "_", DateBin/binary>>],
+    get_stat_commands(Type, Key, {{Year, Month, Day}, {Hour - 1}}, Range - 1, [Command | Commands]);
+
+get_stat_commands(Type, Key, {{Year, Month, 1}}, Range, Commands) ->
+    DateBin = iolist_to_binary(io_lib:format("~.4.0w-~.2.0w-01", [Year, Month])),
+    Command = ["SCARD", <<Type/binary, "_", Key/binary, "_", DateBin/binary>>],
+    {{NewYear, NewMonth, NewDay}, {_NewHour, _NewMin, _NewSec}} =
+        calendar:gregorian_seconds_to_datetime(calendar:datetime_to_gregorian_seconds({{Year, Month, 1}, {0, 0, 0}}) - 3600 * 24),
+    get_stat_commands(Type, Key, {{NewYear, NewMonth, NewDay}}, Range - 1, [Command | Commands]);
+get_stat_commands(Type, Key, {{Year, Month, Day}}, Range, Commands) ->
+    DateBin = iolist_to_binary(io_lib:format("~.4.0w-~.2.0w-~.2.0w", [Year, Month, Day])),
+    Command = ["SCARD", <<Type/binary, "_", Key/binary, "_", DateBin/binary>>],
+    get_stat_commands(Type, Key, {{Year, Month, Day - 1}}, Range - 1, [Command | Commands]).
