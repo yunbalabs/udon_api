@@ -131,8 +131,8 @@ udon_request(Command) when length(Command) > 1 ->
                     [Appkey, Uid, TTL] = Rest,
                     [DayKey, HourKey, MinKey, _SecKey] = get_time_keys(),
                     Commands = lists:foldl(fun(TimeKey, Cmd) ->
-                        ActiveKey = <<"active_", Appkey/binary, "_", TimeKey/binary>>,
-                        OnlineKey = <<"online_", Appkey/binary, "_", TimeKey/binary>>,
+                        ActiveKey = <<"stat,active_", Appkey/binary, "_", TimeKey/binary>>,
+                        OnlineKey = <<"stat,online_", Appkey/binary, "_", TimeKey/binary>>,
                         [["SADD", ActiveKey, Uid] | [["EXPIRE", ActiveKey, TTL] |
                             [["SADD", OnlineKey, Uid] | [["EXPIRE", OnlineKey, TTL] | Cmd]]]]
                     end, [], [DayKey, HourKey, MinKey]),
@@ -141,8 +141,8 @@ udon_request(Command) when length(Command) > 1 ->
                     [Appkey, Uid, TTL] = Rest,
                     [DayKey, HourKey, MinKey, _SecKey] = get_time_keys(),
                     Commands = lists:foldl(fun(TimeKey, Cmd) ->
-                        ActiveKey = <<"active_", Appkey/binary, "_", TimeKey/binary>>,
-                        OnlineKey = <<"online_", Appkey/binary, "_", TimeKey/binary>>,
+                        ActiveKey = <<"stat,active_", Appkey/binary, "_", TimeKey/binary>>,
+                        OnlineKey = <<"stat,online_", Appkey/binary, "_", TimeKey/binary>>,
                         [["SADD", ActiveKey, Uid] | [["EXPIRE", ActiveKey, TTL] |
                             [["SREM", OnlineKey, Uid] | [["EXPIRE", OnlineKey, TTL] | Cmd]]]]
                     end, [], [DayKey, HourKey, MinKey]),
