@@ -127,22 +127,22 @@ udon_request(Command) when length(Command) > 1 ->
                         [<<"SREM">>, BucketKeyBin, Item],
                         [<<"EXPIRE">>, BucketKeyBin, TTL]
                     ]}};
-                "stat_appkey_online" when length(Rest) =:= 2 ->
-                    [Uid, TTL] = Rest,
+                "stat_appkey_online" when length(Rest) =:= 3 ->
+                    [Appkey, Uid, TTL] = Rest,
                     [DayKey, HourKey, MinKey, _SecKey] = get_time_keys(),
                     Commands = lists:foldl(fun(TimeKey, Cmd) ->
-                        ActiveKey = <<"active_", Key/binary, "_", TimeKey/binary>>,
-                        OnlineKey = <<"online_", Key/binary, "_", TimeKey/binary>>,
+                        ActiveKey = <<"active_", Appkey/binary, "_", TimeKey/binary>>,
+                        OnlineKey = <<"online_", Appkey/binary, "_", TimeKey/binary>>,
                         [["SADD", ActiveKey, Uid] | [["EXPIRE", ActiveKey, TTL] |
                             [["SADD", OnlineKey, Uid] | [["EXPIRE", OnlineKey, TTL] | Cmd]]]]
                     end, [], [DayKey, HourKey, MinKey]),
                     {ok, Bucket, Key, {transaction, {Bucket, Key}, Commands}};
-                "stat_appkey_offline" when length(Rest) =:= 2 ->
-                    [Uid, TTL] = Rest,
+                "stat_appkey_offline" when length(Rest) =:= 3 ->
+                    [Appkey, Uid, TTL] = Rest,
                     [DayKey, HourKey, MinKey, _SecKey] = get_time_keys(),
                     Commands = lists:foldl(fun(TimeKey, Cmd) ->
-                        ActiveKey = <<"active_", Key/binary, "_", TimeKey/binary>>,
-                        OnlineKey = <<"online_", Key/binary, "_", TimeKey/binary>>,
+                        ActiveKey = <<"active_", Appkey/binary, "_", TimeKey/binary>>,
+                        OnlineKey = <<"online_", Appkey/binary, "_", TimeKey/binary>>,
                         [["SADD", ActiveKey, Uid] | [["EXPIRE", ActiveKey, TTL] |
                             [["SREM", OnlineKey, Uid] | [["EXPIRE", OnlineKey, TTL] | Cmd]]]]
                     end, [], [DayKey, HourKey, MinKey]),
