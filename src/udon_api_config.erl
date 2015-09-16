@@ -36,5 +36,7 @@ redis_config() ->
 udon_config() ->
     {ok, App}  = application:get_application(?MODULE),
     OpNRW = application:get_env(App, udon_op_num, {1, 1, 1}),
+    OpTimeout = application:get_env(App, udon_op_timeout, 5000),
+    CoverageTimeout = application:get_env(App, udon_coverage_timeout, 5000),
 
-    [{nrw, OpNRW}].
+    [{nrw, OpNRW}, {op_timeout, OpTimeout}, {coverage_timeout, CoverageTimeout}].

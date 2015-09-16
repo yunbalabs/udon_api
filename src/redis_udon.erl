@@ -4,14 +4,26 @@
 -export([init/1, handle_redis/3, handle_info/3, terminate/1, exchange/3]).
 
 -record(redis_udon_state, {exchange_pid}).
--record(exchange_state, {operate = undefined, timer = undefined, request_id, op_num, op_num_r, op_num_w}).
+-record(exchange_state, {
+    operate = undefined, timer = undefined,
+    request_id,
+    op_num, op_num_r, op_num_w, op_timeout,
+    coverage_timeout,
+    type}).
 
 -compile([{parse_transform, lager_transform}]).
 
 init(Args) ->
-    [{nrw, {OpNum, OpNumR, OpNumW}}] = udon_api_config:udon_config(),
+    [
+        {nrw, {OpNum, OpNumR, OpNumW}},
+        {op_timeout, OpTimeout},
+        {coverage_timeout, CoverageTimeout}
+    ] = udon_api_config:udon_config(),
     Pid = spawn_link(?MODULE, exchange, [
-        self(), Args, #exchange_state{op_num = OpNum, op_num_r = OpNumR, op_num_w = OpNumW}
+        self(), Args, #exchange_state{
+            op_num = OpNum, op_num_r = OpNumR, op_num_w = OpNumW, op_timeout = OpTimeout,
+            coverage_timeout = CoverageTimeout
+        }
     ]),
     {ok, #redis_udon_state{exchange_pid = Pid}}.
 
@@ -37,14 +49,22 @@ handle_info(_Connection, Info, State) ->
 terminate(#redis_udon_state{exchange_pid = ExchangePid}) ->
     ExchangePid ! close.
 
-exchange(Client, Args, State = #exchange_state{operate = undefined, timer = undefined, op_num = OpNum, op_num_w = OpNumW}) ->
+exchange(Client, Args, State = #exchange_state{
+    operate = undefined, timer = undefined,
+    op_num = OpNum, op_num_w = OpNumW, op_timeout = OpTimeout,
+    coverage_timeout = CoverageTimeout
+}) ->
     receive
         {redis_request, Command} ->
             case udon_request(Command) of
                 {ok, Bucket, Key, Operate} ->
-                    {ok, ReqId} = udon_op_fsm:op(OpNum, OpNumW, Operate, {Bucket, Key}),
-                    TimerRef = erlang:start_timer(5000, self(), timeout),
-                    exchange(Client, Args, State#exchange_state{operate = Operate, timer = TimerRef, request_id = ReqId});
+                    {ok, ReqId} = udon_op_fsm:op(OpNum, OpNumW, Operate, {Bucket, Key}, OpTimeout),
+                    TimerRef = erlang:start_timer(OpTimeout, self(), timeout),
+                    exchange(Client, Args, State#exchange_state{operate = Operate, timer = TimerRef, request_id = ReqId, type = op});
+                {ok, Operate} ->
+                    {ok, ReqId} = udon_coverage_fsm:start(Operate, CoverageTimeout),
+                    TimerRef = erlang:start_timer(CoverageTimeout, self(), timeout),
+                    exchange(Client, Args, State#exchange_state{operate = Operate, timer = TimerRef, request_id = ReqId, type = coverage});
                 {error, Error} ->
                     Client ! {error, Error},
                     exchange(Client, Args, State)
@@ -60,7 +80,7 @@ exchange(Client, Args, State = #exchange_state{operate = undefined, timer = unde
         Unknown ->
             lager:error("Exchange receive unknown message: ~p", [Unknown])
     end;
-exchange(Client, Args, State = #exchange_state{operate = Operate, timer = TimerRef, request_id = RequestId}) ->
+exchange(Client, Args, State = #exchange_state{operate = Operate, timer = TimerRef, request_id = RequestId, type = Type}) ->
     receive
         {redis_request, _} ->
             Client ! {error, waiting_response},
@@ -70,7 +90,7 @@ exchange(Client, Args, State = #exchange_state{operate = Operate, timer = TimerR
             exchange(Client, Args, State#exchange_state{operate = undefined, timer = undefined});
         {RequestId, Value} ->
             erlang:cancel_timer(TimerRef),
-            case udon_response(Operate, Value) of
+            case udon_response(Type, Operate, Value) of
                 {ok, Value2} ->
                     Client ! {response, Value2};
                 {error, Error} ->
@@ -150,10 +170,10 @@ udon_request(Command) when length(Command) > 1 ->
                 "stat_appkey" when length(Rest) =:= 4 ->
                     [Type, StatTime, TimeType, Range] = Rest,
                     {ok, [Year, Month, Day, Hour, Min, Sec], []} = io_lib:fread("~4c-~2c-~2c-~2c-~2c-~2c", binary_to_list(StatTime)),
-                    StatCommands = get_stat_commands(Type, Key,
+                    StatCommands = get_stat_commands(<<"stat,", Type/binary>>, Key,
                         {{list_to_integer(Year), list_to_integer(Month), list_to_integer(Day)}, {list_to_integer(Hour), list_to_integer(Min), list_to_integer(Sec)}},
                         binary_to_integer(Range), TimeType),
-                    {ok, Bucket, Key, {transaction_with_value, {Bucket, Key}, StatCommands}};
+                    {ok, {transaction_with_value, StatCommands}};
                 _ ->
                     {error, unsupported_command}
             end;
@@ -163,50 +183,56 @@ udon_request(Command) when length(Command) > 1 ->
 udon_request(_Command) ->
     {error, invalid_command}.
 
-udon_response(Op = {sadd, {_Bucket, _Key}, _Item}, Value) ->
+udon_response(op, Op = {sadd, {_Bucket, _Key}, _Item}, Value) ->
     case lists:all(fun(Ret) -> Ret == ok end, Value) of
         true -> {ok, 1};
-        _ -> operate_error(Op, Value)
+        _ -> operate_error(op, Op, Value)
     end;
-udon_response(Op = {srem, {_Bucket, _Key}, _Item}, Value) ->
+udon_response(op, Op = {srem, {_Bucket, _Key}, _Item}, Value) ->
     case lists:all(fun(Ret) -> Ret == ok end, Value) of
         true -> {ok, 1};
-        _ -> operate_error(Op, Value)
+        _ -> operate_error(op, Op, Value)
     end;
-udon_response(Op = {del, _Bucket, _Key}, Value) ->
+udon_response(op, Op = {del, _Bucket, _Key}, Value) ->
     case lists:all(fun(Ret) -> Ret == ok end, Value) of
         true -> {ok, 1};
-        _ -> operate_error(Op, Value)
+        _ -> operate_error(op, Op, Value)
     end;
-udon_response(Op = {smembers, _Bucket, _Key}, Value) ->
+udon_response(op, Op = {smembers, _Bucket, _Key}, Value) ->
     case lists:all(fun({Ret, _}) -> Ret == ok end, Value) of
         true ->
             DupData = lists:map(fun({ok, D}) -> D end, Value),
             Data = lists_union(DupData),
             {ok, Data};
-        _ -> operate_error(Op, Value)
+        _ -> operate_error(op, Op, Value)
     end;
-udon_response(Op = {transaction, {_Bucket, _Key}, _CommandList}, Value) ->
+udon_response(op, Op = {transaction, {_Bucket, _Key}, _CommandList}, Value) ->
     case lists:all(fun(Ret) -> Ret == ok end, Value) of
         true -> {ok, 1};
-        _ -> operate_error(Op, Value)
+        _ -> operate_error(op, Op, Value)
     end;
-udon_response(Op = {command, {_Bucket, _Key}, _Command}, Value) ->
+udon_response(op, Op = {command, {_Bucket, _Key}, _Command}, Value) ->
     case lists:all(fun({Ret, _}) -> Ret == ok end, Value) of
         true ->
             [{ok, Data} | _ ] = Value,
             {ok, Data};
-        _ -> operate_error(Op, Value)
+        _ -> operate_error(op, Op, Value)
     end;
-udon_response(Op = {transaction_with_value, {_Bucket, _Key}, _CommandList}, Value) ->
+udon_response(op, Op = {transaction_with_value, {_Bucket, _Key}, _CommandList}, Value) ->
     case lists:all(fun({Ret, _}) -> Ret == ok end, Value) of
         true ->
             [{ok, Data} | _ ] = Value,
             {ok, Data};
-        _ -> operate_error(Op, Value)
+        _ -> operate_error(op, Op, Value)
     end;
-udon_response(Operate, Error) ->
-    operate_error(Operate, Error).
+udon_response(coverage, Op = {transaction_with_value, CommandList = [["SCARD", _] | _]}, {ok, RespList}) ->
+    case merge_scards_resp(RespList, lists:duplicate(length(CommandList), 0)) of
+        {ok, Data} ->
+            {ok, Data};
+        _ -> operate_error(coverage, Op, {ok, RespList})
+    end;
+udon_response(Type, Operate, Error) ->
+    operate_error(Type, Operate, Error).
 
 get_method(MethodBin) ->
     MethodStr = binary_to_list(MethodBin),
@@ -231,8 +257,8 @@ lists_union([List | Rest], Set) ->
     Set2 = gb_sets:union([S, Set]),
     lists_union(Rest, Set2).
 
-operate_error(Operate, Error) ->
-    lager:error("~p failed: ~p", [Operate, Error]),
+operate_error(Type, Operate, Error) ->
+    lager:error("~p:~p failed: ~p", [Type, Operate, Error]),
     {error, failed}.
 
 %% UTC Time
@@ -300,3 +326,11 @@ get_stat_commands(Type, Key, {{Year, Month, Day}}, Range, Commands) ->
     DateBin = iolist_to_binary(io_lib:format("~.4.0w-~.2.0w-~.2.0w", [Year, Month, Day])),
     Command = ["SCARD", <<Type/binary, "_", Key/binary, "_", DateBin/binary>>],
     get_stat_commands(Type, Key, {{Year, Month, Day - 1}}, Range - 1, [Command | Commands]).
+
+merge_scards_resp([], Result) ->
+    {ok, Result};
+merge_scards_resp([{_VNodeId, _NodeName, {ok, Resp}} | Rest], Result) ->
+    NewResult = lists:zipwith(fun(X, Y) -> X + Y end, Resp, Result),
+    merge_scards_resp(Rest, NewResult);
+merge_scards_resp([_Error | Rest], Result) ->
+    merge_scards_resp(Rest, Result).
