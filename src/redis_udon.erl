@@ -65,6 +65,9 @@ exchange(Client, Args, State = #exchange_state{
                     {ok, ReqId} = udon_coverage_fsm:start(Operate, CoverageTimeout),
                     TimerRef = erlang:start_timer(CoverageTimeout, self(), timeout),
                     exchange(Client, Args, State#exchange_state{operate = Operate, timer = TimerRef, request_id = ReqId, type = coverage});
+                {reply, Reply} ->
+                    Client ! {response, Reply},
+                    exchange(Client, Args, State);
                 {error, Error} ->
                     Client ! {error, Error},
                     exchange(Client, Args, State)
@@ -178,6 +181,23 @@ udon_request(Command) when length(Command) > 1 ->
                     {error, unsupported_command}
             end;
         not_found ->
+            {error, invalid_command}
+    end;
+udon_request(Command) when length(Command) =:= 1 ->
+    [MethodBin] = Command,
+    {ok, Method} = get_method(MethodBin),
+    case Method of
+        "info" ->
+            {_Claimant, RingReady, _Down, _MarkedDown, _Changes} =
+                riak_core_status:ring_status(),
+            Reply = case RingReady of
+                        undefined ->
+                            <<"loading:1\r\n">>;
+                        _ ->
+                            <<"loading:0\r\n">>
+                    end,
+            {reply, Reply};
+        _ ->
             {error, invalid_command}
     end;
 udon_request(_Command) ->
