@@ -8,7 +8,7 @@
     operate = undefined, timer = undefined,
     request_id,
     op_num, op_num_r, op_num_w, op_timeout,
-    coverage_timeout,
+    coverage_timeout, enable_forward,
     type}).
 
 -compile([{parse_transform, lager_transform}]).
@@ -17,12 +17,13 @@ init(Args) ->
     [
         {nrw, {OpNum, OpNumR, OpNumW}},
         {op_timeout, OpTimeout},
-        {coverage_timeout, CoverageTimeout}
+        {coverage_timeout, CoverageTimeout},
+        {enable_forward, EnableForward}
     ] = udon_api_config:udon_config(),
     Pid = spawn_link(?MODULE, exchange, [
         self(), Args, #exchange_state{
             op_num = OpNum, op_num_r = OpNumR, op_num_w = OpNumW, op_timeout = OpTimeout,
-            coverage_timeout = CoverageTimeout
+            coverage_timeout = CoverageTimeout, enable_forward = EnableForward
         }
     ]),
     {ok, #redis_udon_state{exchange_pid = Pid}}.
@@ -52,13 +53,13 @@ terminate(#redis_udon_state{exchange_pid = ExchangePid}) ->
 exchange(Client, Args, State = #exchange_state{
     operate = undefined, timer = undefined,
     op_num = OpNum, op_num_w = OpNumW, op_timeout = OpTimeout,
-    coverage_timeout = CoverageTimeout
+    coverage_timeout = CoverageTimeout, enable_forward = EnableForward
 }) ->
     receive
         {redis_request, Command} ->
             case udon_request(Command) of
                 {ok, Bucket, Key, Operate} ->
-                    case udon_op_fsm:op(OpNum, OpNumW, Operate, {Bucket, Key}, OpTimeout) of
+                    case udon_op_fsm:op(OpNum, OpNumW, Operate, {Bucket, Key}, OpTimeout, EnableForward) of
                         {ok, ReqId} ->
                             TimerRef = erlang:start_timer(OpTimeout, self(), timeout),
                             exchange(Client, Args, State#exchange_state{operate = Operate, timer = TimerRef, request_id = ReqId, type = op});
@@ -67,9 +68,14 @@ exchange(Client, Args, State = #exchange_state{
                             exchange(Client, Args, State)
                     end;
                 {ok, Operate} ->
-                    {ok, ReqId} = udon_coverage_fsm:start(Operate, CoverageTimeout),
-                    TimerRef = erlang:start_timer(CoverageTimeout, self(), timeout),
-                    exchange(Client, Args, State#exchange_state{operate = Operate, timer = TimerRef, request_id = ReqId, type = coverage});
+                    case udon_coverage_fsm:start(Operate, CoverageTimeout) of
+                        {ok, ReqId} ->
+                            TimerRef = erlang:start_timer(CoverageTimeout, self(), timeout),
+                            exchange(Client, Args, State#exchange_state{operate = Operate, timer = TimerRef, request_id = ReqId, type = coverage});
+                        {error, Error} ->
+                            Client ! {error, Error},
+                            exchange(Client, Args, State)
+                    end;
                 {reply, Reply} ->
                     Client ! {response, Reply},
                     exchange(Client, Args, State);
