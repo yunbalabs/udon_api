@@ -132,16 +132,17 @@ exchange(Client, Args, State = #exchange_state{operate = Operate, timer = TimerR
     end.
 
 udon_request(Command) when length(Command) > 1 ->
-    lager:debug("Redis request ~p", [Command]),
     [MethodBin, BucketKeyBin | Rest] = Command,
     {ok, Bucket, Key} = get_bucket_key(BucketKeyBin),
+    BucketKeyBin2 = <<Bucket/binary, ",", Key/binary>>,
+    lager:debug("Redis request ~p: ~p", [BucketKeyBin2, Command]),
     {ok, Method} = get_method(MethodBin),
     case Method of
         "set" when length(Rest) =:= 1 ->
             [Item] = Rest,
-            {ok, Bucket, Key, {transaction, {Bucket, Key}, [[<<"SET">>, BucketKeyBin, Item]]}};
+            {ok, Bucket, Key, {transaction, {Bucket, Key}, [[<<"SET">>, BucketKeyBin2, Item]]}};
         "get" when length(Rest) =:= 0 ->
-            {ok, Bucket, Key, {transaction_with_value, {Bucket, Key}, [[<<"GET">>, BucketKeyBin]]}};
+            {ok, Bucket, Key, {transaction_with_value, {Bucket, Key}, [[<<"GET">>, BucketKeyBin2]]}};
         "sadd" when length(Rest) =:= 1 ->
             [Item] = Rest,
             {ok, Bucket, Key, {sadd, {Bucket, Key}, Item}};
@@ -154,18 +155,18 @@ udon_request(Command) when length(Command) > 1 ->
             {ok, Bucket, Key, {smembers, Bucket, Key}};
         "expire" when length(Rest) =:= 1 ->
             [TTL] = Rest,
-            {ok, Bucket, Key, {transaction, {Bucket, Key}, [[<<"EXPIRE">>, BucketKeyBin, TTL]]}};
+            {ok, Bucket, Key, {transaction, {Bucket, Key}, [[<<"EXPIRE">>, BucketKeyBin2, TTL]]}};
         "sadd_with_ttl" when length(Rest) =:= 2 ->
             [Item, TTL] = Rest,
             {ok, Bucket, Key, {transaction, {Bucket, Key}, [
-                [<<"SADD">>, BucketKeyBin, Item],
-                [<<"EXPIRE">>, BucketKeyBin, TTL]
+                [<<"SADD">>, BucketKeyBin2, Item],
+                [<<"EXPIRE">>, BucketKeyBin2, TTL]
             ]}};
         "srem_with_ttl" when length(Rest) =:= 2 ->
             [Item, TTL] = Rest,
             {ok, Bucket, Key, {transaction, {Bucket, Key}, [
-                [<<"SREM">>, BucketKeyBin, Item],
-                [<<"EXPIRE">>, BucketKeyBin, TTL]
+                [<<"SREM">>, BucketKeyBin2, Item],
+                [<<"EXPIRE">>, BucketKeyBin2, TTL]
             ]}};
         "stat_appkey_online" when length(Rest) =:= 3 ->
             [Appkey, Uid, TTL] = Rest,
