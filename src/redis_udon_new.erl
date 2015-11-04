@@ -80,6 +80,11 @@ udon_request(Command) when length(Command) > 1 ->
     {ok, Bucket, Key} = get_bucket_key(BucketKeyBin),
     {ok, Method} = get_method(MethodBin),
     case Method of
+        "set" when length(Rest) =:= 1 ->
+            [Item] = Rest,
+            {ok, Bucket, Key, {transaction, {Bucket, Key}, [[<<"SET">>, BucketKeyBin, Item]]}};
+        "get" when length(Rest) =:= 0 ->
+            {ok, Bucket, Key, {transaction_with_value, {Bucket, Key}, [[<<"GET">>, BucketKeyBin]]}};
         "sadd" when length(Rest) =:= 1 ->
             [Item] = Rest,
             {ok, Bucket, Key, {sadd, {Bucket, Key}, Item}};
