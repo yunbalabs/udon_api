@@ -13,6 +13,8 @@
 
 -compile([{parse_transform, lager_transform}]).
 
+-define(DEFAULT_BUCKET, <<"default">>).
+
 init(Args) ->
     [
         {nrw, {OpNum, OpNumR, OpNumW}},
@@ -132,67 +134,63 @@ exchange(Client, Args, State = #exchange_state{operate = Operate, timer = TimerR
 udon_request(Command) when length(Command) > 1 ->
     lager:debug("Redis request ~p", [Command]),
     [MethodBin, BucketKeyBin | Rest] = Command,
-    case get_bucket_key(BucketKeyBin) of
-        {ok, Bucket, Key} ->
-            {ok, Method} = get_method(MethodBin),
-            case Method of
-                "sadd" when length(Rest) =:= 1 ->
-                    [Item] = Rest,
-                    {ok, Bucket, Key, {sadd, {Bucket, Key}, Item}};
-                "srem" when length(Rest) =:= 1 ->
-                    [Item] = Rest,
-                    {ok, Bucket, Key, {srem, {Bucket, Key}, Item}};
-                "del" when length(Rest) =:= 0 ->
-                    {ok, Bucket, Key, {del, Bucket, Key}};
-                "smembers" when length(Rest) =:= 0 ->
-                    {ok, Bucket, Key, {smembers, Bucket, Key}};
-                "expire" when length(Rest) =:= 1 ->
-                    [TTL] = Rest,
-                    {ok, Bucket, Key, {transaction, {Bucket, Key}, [[<<"EXPIRE">>, BucketKeyBin, TTL]]}};
-                "sadd_with_ttl" when length(Rest) =:= 2 ->
-                    [Item, TTL] = Rest,
-                    {ok, Bucket, Key, {transaction, {Bucket, Key}, [
-                        [<<"SADD">>, BucketKeyBin, Item],
-                        [<<"EXPIRE">>, BucketKeyBin, TTL]
-                    ]}};
-                "srem_with_ttl" when length(Rest) =:= 2 ->
-                    [Item, TTL] = Rest,
-                    {ok, Bucket, Key, {transaction, {Bucket, Key}, [
-                        [<<"SREM">>, BucketKeyBin, Item],
-                        [<<"EXPIRE">>, BucketKeyBin, TTL]
-                    ]}};
-                "stat_appkey_online" when length(Rest) =:= 3 ->
-                    [Appkey, Uid, TTL] = Rest,
-                    [DayKey, HourKey, MinKey, _SecKey] = get_time_keys(),
-                    Commands = lists:foldl(fun(TimeKey, Cmd) ->
-                        ActiveKey = <<"stat,active_", Appkey/binary, "_", TimeKey/binary>>,
-                        OnlineKey = <<"stat,online_", Appkey/binary, "_", TimeKey/binary>>,
-                        [["SADD", ActiveKey, Uid] | [["EXPIRE", ActiveKey, TTL] |
-                            [["SADD", OnlineKey, Uid] | [["EXPIRE", OnlineKey, TTL] | Cmd]]]]
-                    end, [], [DayKey, HourKey, MinKey]),
-                    {ok, Bucket, Key, {transaction, {Bucket, Key}, Commands}};
-                "stat_appkey_offline" when length(Rest) =:= 3 ->
-                    [Appkey, Uid, TTL] = Rest,
-                    [DayKey, HourKey, MinKey, _SecKey] = get_time_keys(),
-                    Commands = lists:foldl(fun(TimeKey, Cmd) ->
-                        ActiveKey = <<"stat,active_", Appkey/binary, "_", TimeKey/binary>>,
-                        OnlineKey = <<"stat,online_", Appkey/binary, "_", TimeKey/binary>>,
-                        [["SADD", ActiveKey, Uid] | [["EXPIRE", ActiveKey, TTL] |
-                            [["SREM", OnlineKey, Uid] | [["EXPIRE", OnlineKey, TTL] | Cmd]]]]
-                    end, [], [DayKey, HourKey, MinKey]),
-                    {ok, Bucket, Key, {transaction, {Bucket, Key}, Commands}};
-                "stat_appkey" when length(Rest) =:= 4 ->
-                    [Type, StatTime, TimeType, Range] = Rest,
-                    {ok, [Year, Month, Day, Hour, Min, Sec], []} = io_lib:fread("~4c-~2c-~2c-~2c-~2c-~2c", binary_to_list(StatTime)),
-                    StatCommands = get_stat_commands(<<"stat,", Type/binary>>, Key,
-                        {{list_to_integer(Year), list_to_integer(Month), list_to_integer(Day)}, {list_to_integer(Hour), list_to_integer(Min), list_to_integer(Sec)}},
-                        binary_to_integer(Range), TimeType),
-                    {ok, {transaction_with_value, StatCommands}};
-                _ ->
-                    {error, unsupported_command}
-            end;
-        not_found ->
-            {error, invalid_command}
+    {ok, Bucket, Key} = get_bucket_key(BucketKeyBin),
+    {ok, Method} = get_method(MethodBin),
+    case Method of
+        "sadd" when length(Rest) =:= 1 ->
+            [Item] = Rest,
+            {ok, Bucket, Key, {sadd, {Bucket, Key}, Item}};
+        "srem" when length(Rest) =:= 1 ->
+            [Item] = Rest,
+            {ok, Bucket, Key, {srem, {Bucket, Key}, Item}};
+        "del" when length(Rest) =:= 0 ->
+            {ok, Bucket, Key, {del, Bucket, Key}};
+        "smembers" when length(Rest) =:= 0 ->
+            {ok, Bucket, Key, {smembers, Bucket, Key}};
+        "expire" when length(Rest) =:= 1 ->
+            [TTL] = Rest,
+            {ok, Bucket, Key, {transaction, {Bucket, Key}, [[<<"EXPIRE">>, BucketKeyBin, TTL]]}};
+        "sadd_with_ttl" when length(Rest) =:= 2 ->
+            [Item, TTL] = Rest,
+            {ok, Bucket, Key, {transaction, {Bucket, Key}, [
+                [<<"SADD">>, BucketKeyBin, Item],
+                [<<"EXPIRE">>, BucketKeyBin, TTL]
+            ]}};
+        "srem_with_ttl" when length(Rest) =:= 2 ->
+            [Item, TTL] = Rest,
+            {ok, Bucket, Key, {transaction, {Bucket, Key}, [
+                [<<"SREM">>, BucketKeyBin, Item],
+                [<<"EXPIRE">>, BucketKeyBin, TTL]
+            ]}};
+        "stat_appkey_online" when length(Rest) =:= 3 ->
+            [Appkey, Uid, TTL] = Rest,
+            [DayKey, HourKey, MinKey, _SecKey] = get_time_keys(),
+            Commands = lists:foldl(fun(TimeKey, Cmd) ->
+                ActiveKey = <<"stat,active_", Appkey/binary, "_", TimeKey/binary>>,
+                OnlineKey = <<"stat,online_", Appkey/binary, "_", TimeKey/binary>>,
+                [["SADD", ActiveKey, Uid] | [["EXPIRE", ActiveKey, TTL] |
+                    [["SADD", OnlineKey, Uid] | [["EXPIRE", OnlineKey, TTL] | Cmd]]]]
+                                   end, [], [DayKey, HourKey, MinKey]),
+            {ok, Bucket, Key, {transaction, {Bucket, Key}, Commands}};
+        "stat_appkey_offline" when length(Rest) =:= 3 ->
+            [Appkey, Uid, TTL] = Rest,
+            [DayKey, HourKey, MinKey, _SecKey] = get_time_keys(),
+            Commands = lists:foldl(fun(TimeKey, Cmd) ->
+                ActiveKey = <<"stat,active_", Appkey/binary, "_", TimeKey/binary>>,
+                OnlineKey = <<"stat,online_", Appkey/binary, "_", TimeKey/binary>>,
+                [["SADD", ActiveKey, Uid] | [["EXPIRE", ActiveKey, TTL] |
+                    [["SREM", OnlineKey, Uid] | [["EXPIRE", OnlineKey, TTL] | Cmd]]]]
+                                   end, [], [DayKey, HourKey, MinKey]),
+            {ok, Bucket, Key, {transaction, {Bucket, Key}, Commands}};
+        "stat_appkey" when length(Rest) =:= 4 ->
+            [Type, StatTime, TimeType, Range] = Rest,
+            {ok, [Year, Month, Day, Hour, Min, Sec], []} = io_lib:fread("~4c-~2c-~2c-~2c-~2c-~2c", binary_to_list(StatTime)),
+            StatCommands = get_stat_commands(<<"stat,", Type/binary>>, Key,
+                {{list_to_integer(Year), list_to_integer(Month), list_to_integer(Day)}, {list_to_integer(Hour), list_to_integer(Min), list_to_integer(Sec)}},
+                binary_to_integer(Range), TimeType),
+            {ok, {transaction_with_value, StatCommands}};
+        _ ->
+            {error, unsupported_command}
     end;
 udon_request(Command) when length(Command) =:= 1 ->
     [MethodBin] = Command,
@@ -275,7 +273,7 @@ get_bucket_key(BucketKeyBin) ->
             [BucketStr, KeyStr] = List,
             {ok, list_to_binary(BucketStr), list_to_binary(KeyStr)};
         _ ->
-            not_found
+            {ok, ?DEFAULT_BUCKET, BucketKeyBin}
     end.
 
 lists_union(Lists) ->
